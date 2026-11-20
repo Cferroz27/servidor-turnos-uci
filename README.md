@@ -10,7 +10,7 @@ Servidor MCP con cuatro conectores, uno por rol, sobre una base PostgreSQL por e
 | Administración y nómina | `/nomina/mcp` | `CLAVE_NOMINA` | horas_del_mes, prenomina, resumen_costos, parametros_de_nomina |
 | TI | `/ti/mcp` | `CLAVE_TI` | cargar_datos_iniciales, estado_del_sistema, ver_auditoria, equipos_configurados |
 
-La clave se envía en el encabezado `X-API-Key` (o `Authorization: Bearer …`, o `?clave=…` en la URL).
+La clave se envía en el encabezado `X-API-Key` (o `Authorization: Bearer …`) o dentro de la ruta: `https://SERVIDOR/ti/LA_CLAVE/mcp` (para cuentas que no permiten encabezados).
 
 ## Variables de entorno
 - `CLAVE_TALENTO_HUMANO`, `CLAVE_JEFE_UCI`, `CLAVE_NOMINA`, `CLAVE_TI`: una clave larga y distinta por rol.

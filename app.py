@@ -3,11 +3,11 @@
   /talento-humano/mcp   /jefe-uci/mcp   /nomina/mcp   /ti/mcp
 
 Cada ruta exige su propia clave (variable de entorno CLAVE_<ROL>) en el encabezado
-X-API-Key, en "Authorization: Bearer <clave>" o como ?clave=<clave> en la URL.
+X-API-Key, en "Authorization: Bearer <clave>", como ?clave=<clave> o dentro de la ruta: /ti/<clave>/mcp.
 Base de datos: modo compartido con DATABASE_URL (un esquema equipo_N por equipo, EQUIPOS=0,1,2,3)
 o modo separado con EQUIPO_N_DATABASE_URL (una base por equipo). AUTOCARGAR=0 carga el equipo 0 al arrancar.
 """
-import contextlib, hmac, json, os, datetime as dt
+import contextlib, hmac, json, os, re, datetime as dt
 from decimal import Decimal
 
 import psycopg
@@ -316,11 +316,27 @@ async def ciclo_de_vida(app):
         yield
 
 
-app = Starlette(
+_starlette = Starlette(
     routes=[Route("/", salud), Route("/salud", salud)]
     + [Mount(f"/{r}", app=ConClave(srv.streamable_http_app(), var)) for r, (srv, var) in SERVIDORES.items()],
     lifespan=ciclo_de_vida,
 )
+
+_RUTA_CON_CLAVE = re.compile(r"^/(" + "|".join(re.escape(r) for r in SERVIDORES) + r")/([^/]+)/mcp/?$")
+
+
+async def app(scope, receive, send):
+    """Permite poner la clave dentro de la ruta: /ti/<clave>/mcp (para clientes que no envían encabezados
+    ni conservan ?clave= en la URL). Se reescribe a /ti/mcp con el encabezado X-API-Key."""
+    if scope["type"] == "http":
+        m = _RUTA_CON_CLAVE.match(scope.get("path", ""))
+        if m and m.group(2) != "mcp":
+            scope = dict(scope)
+            nueva = f"/{m.group(1)}/mcp"
+            scope["path"] = nueva
+            scope["raw_path"] = nueva.encode()
+            scope["headers"] = [h for h in scope.get("headers", []) if h[0].lower() != b"x-api-key"] + [(b"x-api-key", m.group(2).encode())]
+    await _starlette(scope, receive, send)
 
 if __name__ == "__main__":
     uvicorn.run(app, host="0.0.0.0", port=int(os.environ.get("PORT", 8000)))
