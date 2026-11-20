@@ -1,0 +1,6 @@
+id,codigo,tipo,desde,hasta,observacion,registrada_por,anulada
+1,EMP-08,VAC,2026-08-10,2026-08-23,Vacaciones aprobadas,Talento humano (histórico),false
+2,EMP-03,VAC,2026-09-14,2026-09-27,Vacaciones aprobadas,Talento humano (histórico),false
+3,EMP-15,INC,2026-10-05,2026-10-07,Incapacidad (sin diagnóstico: dato reservado),Talento humano (histórico),false
+4,EMP-10,LIC,2026-10-20,2026-10-20,Licencia no remunerada,Talento humano (histórico),false
+5,EMP-19,VAC,2026-11-09,2026-11-22,Vacaciones aprobadas,Talento humano (histórico),false

@@ -1,0 +1,44 @@
+# Blueprint: crea la base PostgreSQL gratuita y el servidor MCP en un solo paso.
+databases:
+  - name: turnos-uci-db
+    plan: free
+    region: oregon
+    databaseName: turnos_uci
+    user: turnos_admin
+
+services:
+  - type: web
+    name: turnos-uci-mcp
+    runtime: python
+    plan: free
+    region: oregon
+    buildCommand: pip install -r requirements.txt
+    startCommand: python app.py
+    healthCheckPath: /salud
+    envVars:
+      - key: PYTHON_VERSION
+        value: 3.12.7
+      - key: DATABASE_URL
+        fromDatabase:
+          name: turnos-uci-db
+          property: connectionString
+      - key: EQUIPOS
+        value: "0,1,2,3"
+      - key: AUTOCARGAR
+        value: "0"
+      - key: CREAR_ROLES_TI
+        value: "1"
+      - key: CLAVE_TALENTO_HUMANO
+        generateValue: true
+      - key: CLAVE_JEFE_UCI
+        generateValue: true
+      - key: CLAVE_NOMINA
+        generateValue: true
+      - key: CLAVE_TI
+        generateValue: true
+      - key: CLAVE_BD_EQUIPO_1
+        generateValue: true
+      - key: CLAVE_BD_EQUIPO_2
+        generateValue: true
+      - key: CLAVE_BD_EQUIPO_3
+        generateValue: true

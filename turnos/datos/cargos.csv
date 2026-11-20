@@ -1,0 +1,4 @@
+id_cargo,nombre,rol,salario_base,hace_turnos
+ENF_JEFE,Enfermero(a) jefe,JEFE,4800000,True
+AUX_ENF,Auxiliar de enfermería,AUX,2300000,True
+COORD_UCI,Coordinador(a) de enfermería UCI,COORD,7200000,False

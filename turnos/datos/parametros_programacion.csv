@@ -1,0 +1,7 @@
+clave,valor,descripcion
+horas_max_semana,40,Tope semanal de la institución (la ley permite 42 desde el 15/07/2026)
+descanso_min_horas,12,Horas mínimas entre el fin de un turno y el inicio del siguiente
+prohibido_despues_de_noche,"M,T",Turnos que no se asignan el día después de una noche
+max_dias_seguidos,6,Máximo de días seguidos trabajados
+max_noches_seguidas,2,Máximo de noches seguidas
+equidad_max_diferencia_noches,2,Diferencia máxima de noches entre personas del mismo rol

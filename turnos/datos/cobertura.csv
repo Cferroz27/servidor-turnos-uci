@@ -1,0 +1,7 @@
+turno,rol,minimo
+M,JEFE,1
+M,AUX,3
+T,JEFE,1
+T,AUX,3
+N,JEFE,1
+N,AUX,2

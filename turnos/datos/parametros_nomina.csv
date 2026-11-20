@@ -1,0 +1,5 @@
+vigente_desde,divisor_horas,recargo_nocturno,recargo_dominical,hora_inicio_nocturna,hora_fin_nocturna,aporte_salud,aporte_pension,smmlv,fuente
+2026-01-01,220,0.35,0.8,19,6,0.04,0.04,1750905,Ley 2466/2025: nocturno desde 19:00; dominical 80 %; Ley 2101/2021: 44 h
+2026-07-01,220,0.35,0.9,19,6,0.04,0.04,1750905,Dominical/festivo 90 % desde 01/07/2026
+2026-07-15,210,0.35,0.9,19,6,0.04,0.04,1750905,Jornada 42 h: divisor 210 desde 15/07/2026
+2027-07-01,210,0.35,1.0,19,6,0.04,0.04,1750905,Dominical/festivo 100 % desde 01/07/2027 (actualizar SMMLV 2027)
