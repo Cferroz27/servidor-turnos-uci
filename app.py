@@ -19,6 +19,7 @@ from starlette.responses import JSONResponse
 from starlette.routing import Mount, Route
 
 from turnos import carga, servicio as s
+from quirofanos import conectores as qx_conectores
 
 SEGURIDAD = TransportSecuritySettings(enable_dns_rebinding_protection=False)
 
@@ -70,6 +71,24 @@ def conexion(equipo):
             yield conn
         return
     raise ValueError(f"El equipo {equipo} no tiene base configurada. Equipos disponibles: {_equipos()}.")
+
+
+@contextlib.contextmanager
+def conexion_qx(equipo):
+    """Proceso quirúrgico: esquema qx_equipo_N en la base compartida, o esquema qx en la base del equipo."""
+    equipo = int(equipo)
+    url = os.environ.get(f"EQUIPO_{equipo}_DATABASE_URL", "")
+    if not url and equipo in _compartidos():
+        url = os.environ["DATABASE_URL"]
+    if not url:
+        raise ValueError(f"El equipo {equipo} no tiene base configurada. Equipos disponibles: {_equipos()}.")
+    nombre = "qx" if os.environ.get(f"EQUIPO_{equipo}_DATABASE_URL") else f"qx_equipo_{equipo}"
+    with psycopg.connect(url, connect_timeout=15) as conn:
+        with conn.cursor() as cur:
+            cur.execute(f"CREATE SCHEMA IF NOT EXISTS {nombre}")
+            cur.execute(f"SET search_path TO {nombre}")
+        conn.commit()
+        yield conn
 
 
 def ejecutar(equipo, fn, *a, **k):
@@ -240,6 +259,8 @@ def equipos_configurados() -> str:
 # ------------------------------------------------------------------ app y seguridad
 SERVIDORES = {"talento-humano": (th, "CLAVE_TALENTO_HUMANO"), "jefe-uci": (jefe, "CLAVE_JEFE_UCI"),
               "nomina": (nom, "CLAVE_NOMINA"), "ti": (ti, "CLAVE_TI")}
+# Proceso quirúrgico: siete conectores más, uno por rol (ver quirofanos/conectores.py)
+SERVIDORES.update(qx_conectores.construir(nuevo, conexion_qx, _json))
 
 
 class ConClave:
@@ -297,11 +318,22 @@ def preparar_bases():
                 estado["conexion"] = "ok"
         except Exception as e:
             estado["conexion"] = f"error: {type(e).__name__}"
+        if n in {int(x) for x in os.environ.get("AUTOCARGAR_QX", "").split(",") if x.strip()}:
+            try:
+                from quirofanos import carga as qx_carga
+                with conexion_qx(n) as conn:
+                    if qx_carga.casos_cargados(conn):
+                        estado["qx"] = "ya tenía datos"
+                    else:
+                        qx_carga.cargar(conn, dt.datetime.now(dt.timezone(dt.timedelta(hours=-5))).date(), informar=lambda *_: None)
+                        estado["qx"] = "cargado"
+            except Exception as e:
+                estado["qx"] = f"error: {type(e).__name__}"
         PREPARACION[n] = estado
 
 
 async def salud(request):
-    return JSONResponse({"servicio": "turnos-uci", "estado": "activo", "equipos_configurados": _equipos(),
+    return JSONResponse({"servicio": "turnos-uci + quirofanos", "estado": "activo", "equipos_configurados": _equipos(),
                          "modo": "compartido (un esquema por equipo)" if _compartidos() else "una base por equipo",
                          "preparacion": PREPARACION,
                          "conectores": [f"/{r}/mcp" for r in SERVIDORES]})

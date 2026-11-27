@@ -1,6 +1,8 @@
-# Servidor de turnos UCI (MCP) · Diplomado IA con Claude
+# Servidor MCP del diplomado IA con Claude: turnos UCI y proceso quirúrgico
 
-Servidor MCP con cuatro conectores, uno por rol, sobre una base PostgreSQL por equipo.
+Un solo servidor en Render con dos sistemas sobre la misma base PostgreSQL:
+- **Turnos de la UCI**: cuatro conectores, uno por rol (esquemas `equipo_N`).
+- **Proceso quirúrgico** (nuevo): siete conectores, uno por rol (esquemas `qx_equipo_N`). Ver la sección al final.
 **Todos los datos son ficticios.**
 
 | Conector | Ruta | Variable de la clave | Herramientas |
@@ -37,3 +39,38 @@ pip install -r requirements.txt
 export CLAVE_TI=prueba EQUIPO_1_DATABASE_URL="postgresql://..."
 python app.py    # http://localhost:8000/salud
 ```
+
+
+---
+
+## Proceso quirúrgico (módulo `quirofanos/`)
+
+Lleva cada cirugía por sus 10 etapas, de la solicitud a la factura y la glosa, con las reglas de POL-QX-002 (ficticia)
+verificadas en el servidor. Los pacientes existen solo como código SQ.
+
+| Conector (nombre en Claude) | Ruta | Variable de la clave | Para |
+|---|---|---|---|
+| `qx asistencial` | `/qx-asistencial/mcp` | `CLAVE_QX_ASISTENCIAL` | Programación (proponer, mover, aprobar), preparación, ingreso, lista de chequeo, horas reales, egreso, cancelación |
+| `qx cirujano` | `/qx-cirujano/mcp` | `CLAVE_QX_CIRUJANO` | Solicitudes, mis casos, confirmación, insumos especiales, notas |
+| `qx administrativo` | `/qx-administrativo/mcp` | `CLAVE_QX_ADMINISTRATIVO` | Validación de solicitudes, autorizaciones, citación |
+| `qx insumos` | `/qx-insumos/mcp` | `CLAVE_QX_INSUMOS` | Central de esterilización, almacén, novedades de equipos y salas |
+| `qx contable` | `/qx-contable/mcp` | `CLAVE_QX_CONTABLE` | Costos, facturas, radicación, glosas (Res. 2284 de 2023) |
+| `qx consulta` | `/qx-consulta/mcp` | `CLAVE_QX_CONSULTA` | Jurídico, análisis de datos y gerencia (solo lectura) |
+| `qx ti` | `/qx-ti/mcp` | `CLAVE_QX_TI` | Carga de datos, estado, auditoría, alertas de seguridad, fecha del curso |
+
+Todos tienen `tablero_quirurgico`: la lectura que usa el artefacto de escritorio, recortada según el rol (sin costos para los roles clínicos).
+
+**Reglas que verifica el servidor** (`quirofanos/reglas.py`): prioridad y días de espera; P2 y P3 solo con autorización aprobada y vigente
+(P1 en paralelo); sala con su equipo, disponible y con mantenimiento al día; Q6 solo P1 de 7:00 a 11:00; máximo 2 UCI por día; cirujano
+en sus días y horas y nunca en dos salas; duración + 30 min de rotación; última cirugía a las 17:00; insumo faltante o vencido bloquea;
+salas simultáneas ≤ anestesiólogos; sin festivos. Una programación con errores **no se puede aprobar**, y «Listo para sala» solo se
+marca con las etapas 2 a 7 completas.
+
+**Seguridad**: el texto libre con documentos, celulares o correos se rechaza; el que trae instrucciones («ignora la política…»)
+se guarda como dato y genera una alerta para TI. Todo cambio queda en `auditoria` con el rol y el cargo.
+
+**Datos**: `cargar_datos_quirurgicos` (conector TI) genera datos ficticios **relativos a la fecha de carga**: 36 casos en lista de
+espera, la semana siguiente por programar y 4 semanas de historia con tiempos, cancelaciones, facturas y glosas. `AUTOCARGAR_QX=0`
+carga el equipo 0 al arrancar. `fijar_fecha_del_curso` fija el «hoy» del sistema para practicar un día concreto.
+
+Pruebas de punta a punta: 51 verificaciones con un cliente MCP real (claves por rol, reglas, bloqueos, flujo completo hasta la glosa).

@@ -36,6 +36,23 @@ services:
         generateValue: true
       - key: CLAVE_TI
         generateValue: true
+      # Proceso quirúrgico: una clave por conector (quirofanos/conectores.py)
+      - key: CLAVE_QX_ASISTENCIAL
+        generateValue: true
+      - key: CLAVE_QX_CIRUJANO
+        generateValue: true
+      - key: CLAVE_QX_ADMINISTRATIVO
+        generateValue: true
+      - key: CLAVE_QX_INSUMOS
+        generateValue: true
+      - key: CLAVE_QX_CONTABLE
+        generateValue: true
+      - key: CLAVE_QX_CONSULTA
+        generateValue: true
+      - key: CLAVE_QX_TI
+        generateValue: true
+      - key: AUTOCARGAR_QX
+        value: "0"
       - key: CLAVE_BD_EQUIPO_1
         generateValue: true
       - key: CLAVE_BD_EQUIPO_2
