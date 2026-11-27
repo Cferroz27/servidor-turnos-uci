@@ -99,8 +99,16 @@ def ejecutar(equipo, fn, *a, **k):
         return _json({"error": str(e)})
 
 
+class _ServidorTexto(FastMCP):
+    """Las herramientas devuelven JSON como texto. Sin salida estructurada, los artefactos reciben en
+    `payload` el JSON ya interpretado (y no un envoltorio {"result": "<texto>"})."""
+    def tool(self, *a, **k):
+        k.setdefault("structured_output", False)
+        return super().tool(*a, **k)
+
+
 def nuevo(nombre, instrucciones):
-    return FastMCP(nombre, instructions=instrucciones, stateless_http=True, json_response=True, transport_security=SEGURIDAD)
+    return _ServidorTexto(nombre, instructions=instrucciones, stateless_http=True, json_response=True, transport_security=SEGURIDAD)
 
 
 COMUN = ("Sistema de turnos de la UCI (datos ficticios de un curso). Todas las herramientas piden el número de equipo (1, 2 o 3). "
