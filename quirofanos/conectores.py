@@ -39,6 +39,32 @@ def construir(nuevo, conexion, a_json):
         @srv.tool(description=descripcion, annotations=LECTURA)
         def tablero_quirurgico(equipo: int, semana: str = "") -> str:
             return ejecutar(equipo, s.tablero, rol, semana or None)
+
+        @srv.tool(annotations=ESCRITURA)
+        def guardar_salida(equipo: int, titulo: str, contenido: str, creada_por: str, periodo: str = "", datos: dict | list | None = None) -> str:
+            """Guarda en el servidor una salida o informe de este rol (asunto, resumen de tres líneas y detalle), para que las otras áreas
+            la consulten. contenido: texto o markdown, solo códigos SQ (se rechazan nombres, documentos, teléfonos y correos).
+            periodo: '2026-11-30' o 'semana 2026-11-30'. datos: tabla o cifras opcionales en JSON. creada_por: cargo."""
+            return ejecutar(equipo, s.guardar_salida, rol, titulo, contenido, creada_por, periodo, datos)
+
+        @srv.tool(annotations=LECTURA)
+        def listar_salidas(equipo: int, rol: str = "", limite: int = 30) -> str:
+            """Salidas guardadas por todas las áreas (o solo de un rol: ASISTENCIAL, CIRUJANO, ADMINISTRATIVO, INSUMOS, CONTABLE, CONSULTA, TI)."""
+            return ejecutar(equipo, s.listar_salidas, rol, limite)
+
+        @srv.tool(annotations=LECTURA)
+        def ver_salida(equipo: int, id_salida: int) -> str:
+            """Contenido completo de una salida guardada."""
+            return ejecutar(equipo, s.ver_salida, id_salida)
+
+        @srv.tool(annotations=LECTURA)
+        def servicios_disponibles() -> str:
+            """Catálogo de lo que ofrece este conector: cada herramienta con sus argumentos y para qué sirve, y la estructura de los datos
+            de tablero_quirurgico. Úselo antes de construir un artefacto o una automatización sobre esta base."""
+            hs = [{"nombre": t.name, "para_que": " ".join((t.description or "").split()), "argumentos": t.parameters.get("properties", {}),
+                   "obligatorios": t.parameters.get("required", []),
+                   "solo_lectura": bool(t.annotations and t.annotations.readOnlyHint)} for t in srv._tool_manager.list_tools()]
+            return a_json(s.servicios(rol, hs))
         return tablero_quirurgico
 
     T_DESC = ("Tablero completo del proceso quirúrgico: casos con el estado de sus 10 etapas, responsable del paso siguiente, bloqueos, "
@@ -295,6 +321,21 @@ def construir(nuevo, conexion, a_json):
             with conexion(equipo) as conn:
                 hoy = dt.datetime.now(ZoneInfo("America/Bogota")).date()
                 return a_json({"cargado": True, **carga.cargar(conn, hoy, reiniciar=reiniciar, informar=lambda *_: None)})
+        except Exception as e:
+            return a_json({"error": str(e)})
+
+    @ti.tool(annotations=ESCRITURA)
+    def crear_base_del_equipo(equipo: int, con_datos_de_ejemplo: bool = True, confirmar: bool = False, reiniciar: bool = False) -> str:
+        """Crea la base de trabajo del equipo en el servidor. con_datos_de_ejemplo=true: 36 casos en espera y 4 semanas de historia.
+        false: base vacía, solo con los catálogos (salas, equipos, cirujanos, aseguradoras, procedimientos y parámetros), para registrar
+        los casos desde cero. Requiere confirmar=true; reiniciar=true borra lo que haya del equipo."""
+        if not confirmar:
+            return a_json({"mensaje": "Vuelva a llamar con confirmar=true para crear la base del equipo."})
+        try:
+            with conexion(equipo) as conn:
+                hoy = dt.datetime.now(ZoneInfo("America/Bogota")).date()
+                return a_json({"creada": True, "equipo": equipo, **carga.cargar(conn, hoy, reiniciar=reiniciar, informar=lambda *_: None,
+                                                                                 vacia=not con_datos_de_ejemplo)})
         except Exception as e:
             return a_json({"error": str(e)})
 

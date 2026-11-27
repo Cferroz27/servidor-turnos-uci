@@ -268,3 +268,16 @@ CREATE INDEX IF NOT EXISTS ix_aud ON auditoria(momento DESC);
 CREATE OR REPLACE VIEW v_autorizacion_vigente AS
 SELECT DISTINCT ON (sq) sq, estado, numero, vigente_hasta, registrada_por, momento
 FROM autorizaciones ORDER BY sq, momento DESC, id DESC;
+
+-- ============================================================ SALIDAS POR ROL (las genera cada artefacto o chat y quedan en el servidor)
+CREATE TABLE IF NOT EXISTS salidas (
+  id          SERIAL PRIMARY KEY,
+  rol         TEXT NOT NULL,                      -- conector que la guardó
+  titulo      TEXT NOT NULL,
+  periodo     TEXT,                               -- '2026-11-30' o 'semana 2026-11-30'
+  contenido   TEXT NOT NULL,                      -- texto o markdown: asunto, resumen y detalle (solo códigos SQ)
+  datos       JSONB,                              -- opcional: tabla o cifras que respaldan la salida
+  creada_por  TEXT NOT NULL,                      -- cargo
+  momento     TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS ix_salidas ON salidas(rol, momento DESC);

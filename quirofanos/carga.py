@@ -9,9 +9,9 @@ from . import datos as D
 AQUI = Path(__file__).resolve().parent
 TABLAS = ["parametros", "salas", "equipos_biomedicos", "cirujanos", "aseguradoras", "procedimientos", "novedades_recursos",
           "casos", "autorizaciones", "programaciones", "programacion_casos", "preparacion", "insumos_caso", "confirmaciones",
-          "ingreso", "lista_chequeo", "tiempos", "cancelaciones", "notas", "facturas", "glosas", "auditoria", "alertas_seguridad"]
+          "ingreso", "lista_chequeo", "tiempos", "cancelaciones", "notas", "facturas", "glosas", "auditoria", "alertas_seguridad", "salidas"]
 SERIALES = {"novedades_recursos": "id", "autorizaciones": "id", "programaciones": "id", "insumos_caso": "id",
-            "cancelaciones": "id", "notas": "id", "glosas": "id", "auditoria": "id", "alertas_seguridad": "id"}
+            "cancelaciones": "id", "notas": "id", "glosas": "id", "auditoria": "id", "alertas_seguridad": "id", "salidas": "id"}
 
 
 def crear_tablas(conn):
@@ -36,10 +36,15 @@ def _insertar(cur, tabla, filas):
     cur.executemany(sql, [tuple(f[c] for c in cols) for f in filas])
 
 
-def cargar(conn, hoy, reiniciar=False, informar=print):
+def cargar(conn, hoy, reiniciar=False, informar=print, vacia=False):
+    """vacia=True: solo tablas y catálogos (salas, equipos, cirujanos, aseguradoras, procedimientos, parámetros), sin casos."""
     existentes = casos_cargados(conn)
     if existentes and not reiniciar:
         raise RuntimeError(f"La base quirúrgica ya tiene {existentes} casos. Para borrar todo y volver a cargar use reiniciar=true.")
+    with conn.cursor() as cur:
+        cur.execute("SELECT to_regclass('salas') IS NOT NULL")
+        if cur.fetchone()[0] and not reiniciar:
+            raise RuntimeError("La base del equipo ya existe (sin casos). Para crearla de nuevo use reiniciar=true.")
     with conn.cursor() as cur:
         if reiniciar:
             cur.execute("DROP VIEW IF EXISTS v_autorizacion_vigente")
@@ -58,13 +63,14 @@ def cargar(conn, hoy, reiniciar=False, informar=print):
         _insertar(cur, "procedimientos", [dict(codigo=p[0], nombre=p[1], especialidad=p[2], tipo_cirugia=p[3], duracion_min=p[4],
                                                equipo_requerido=p[5], set_instrumental=p[6], requiere_implante=p[7], requiere_sangre=p[8],
                                                costo_estimado=p[9], tarifa=p[10]) for p in D.PROCEDIMIENTOS])
-        for t in ["novedades_recursos", "casos", "autorizaciones", "programaciones", "programacion_casos", "preparacion", "insumos_caso",
-                  "confirmaciones", "ingreso", "lista_chequeo", "tiempos", "cancelaciones", "facturas", "glosas"]:
+        for t in ([] if vacia else ["novedades_recursos", "casos", "autorizaciones", "programaciones", "programacion_casos", "preparacion", "insumos_caso",
+                  "confirmaciones", "ingreso", "lista_chequeo", "tiempos", "cancelaciones", "facturas", "glosas"]):
             filas = T[t]
             if t == "novedades_recursos":
                 filas = [dict(f) for f in filas]
             _insertar(cur, t, filas)
-        _insertar(cur, "notas", T["notas"])
+        if not vacia:
+            _insertar(cur, "notas", T["notas"])
         for t, col in SERIALES.items():
             cur.execute(f"SELECT setval(pg_get_serial_sequence('{t}','{col}'), COALESCE(MAX({col}),0)+1, false) FROM {t}")
         # El caso con instrucciones incrustadas queda marcado desde la carga
@@ -80,7 +86,7 @@ def cargar(conn, hoy, reiniciar=False, informar=print):
             cur.execute(f"SELECT count(*) FROM {t}")
             resumen[t] = cur.fetchone()[0]
         cur.execute("INSERT INTO auditoria (rol, quien, accion, detalle) VALUES ('TI', 'Carga inicial', 'carga_inicial', %s::jsonb)",
-                    (json.dumps({"fecha_carga": hoy.isoformat(), "semana_por_programar": semana.isoformat(), "filas": resumen}),))
+                    (json.dumps({"fecha_carga": hoy.isoformat(), "semana_por_programar": semana.isoformat(), "vacia": vacia, "filas": resumen}),))
     conn.commit()
     informar(f"Datos cargados. Semana por programar: {semana.isoformat()}")
-    return {"fecha_carga": hoy.isoformat(), "semana_por_programar": semana.isoformat(), "filas": resumen}
+    return {"fecha_carga": hoy.isoformat(), "semana_por_programar": semana.isoformat(), "base": "vacía (solo catálogos)" if vacia else "con datos de ejemplo", "filas": resumen}

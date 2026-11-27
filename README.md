@@ -58,7 +58,12 @@ verificadas en el servidor. Los pacientes existen solo como código SQ.
 | `qx consulta` | `/qx-consulta/mcp` | `CLAVE_QX_CONSULTA` | Jurídico, análisis de datos y gerencia (solo lectura) |
 | `qx ti` | `/qx-ti/mcp` | `CLAVE_QX_TI` | Carga de datos, estado, auditoría, alertas de seguridad, fecha del curso |
 
-Todos tienen `tablero_quirurgico`: la lectura que usa el artefacto de escritorio, recortada según el rol (sin costos para los roles clínicos).
+Todos tienen además cinco servicios comunes:
+- `tablero_quirurgico`: toda la información que necesita un artefacto, recortada según el rol (sin costos para los roles clínicos).
+- `servicios_disponibles`: catálogo de las herramientas del conector (argumentos y para qué sirven) y la estructura del tablero. Es lo primero que se consulta para construir un artefacto.
+- `guardar_salida`, `listar_salidas`, `ver_salida`: cada área guarda en el servidor sus informes (texto + datos JSON) y las demás los consultan.
+
+TI tiene `crear_base_del_equipo` (con datos de ejemplo o vacía, solo con catálogos) para que cada grupo trabaje en su propia base.
 
 **Reglas que verifica el servidor** (`quirofanos/reglas.py`): prioridad y días de espera; P2 y P3 solo con autorización aprobada y vigente
 (P1 en paralelo); sala con su equipo, disponible y con mantenimiento al día; Q6 solo P1 de 7:00 a 11:00; máximo 2 UCI por día; cirujano

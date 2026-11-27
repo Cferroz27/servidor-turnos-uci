@@ -479,6 +479,10 @@ def tablero(conn, rol, semana=None, cirujano=None):
         "items_chequeo": ITEMS_CHEQUEO, "items_ingreso": ITEMS_INGRESO, "items_preparacion": ITEMS_PREP,
     }
     try:
+        salida["salidas"] = listar_salidas(conn, "", 20)
+    except Exception:
+        salida["salidas"] = []
+    try:
         salida["indicadores"] = indicadores(conn)
     except Exception as e:  # los indicadores no deben tumbar el tablero
         salida["indicadores"] = {"error": str(e)}
@@ -1256,3 +1260,74 @@ def fijar_fecha_del_curso(conn, fecha, quien):
     auditar(conn, "TI", "fijar_fecha", quien, None, {"fecha_hoy": fecha})
     conn.commit()
     return {"fecha_hoy": fecha or "fecha real de Colombia"}
+
+
+# ------------------------------------------------------------------ SALIDAS (todas las áreas) y catálogo de servicios
+DDL_SALIDAS = """CREATE TABLE IF NOT EXISTS salidas (id SERIAL PRIMARY KEY, rol TEXT NOT NULL, titulo TEXT NOT NULL, periodo TEXT,
+  contenido TEXT NOT NULL, datos JSONB, creada_por TEXT NOT NULL, momento TIMESTAMPTZ NOT NULL DEFAULT now())"""
+
+
+def guardar_salida(conn, rol, titulo, contenido, creada_por, periodo="", datos=None):
+    if not (titulo and contenido and creada_por):
+        raise ValueError("Indique titulo, contenido y creada_por (cargo).")
+    if len(contenido) > 60000:
+        raise ValueError("La salida supera 60.000 caracteres: resúmala o guarde el detalle en 'datos'.")
+    with conn.cursor() as cur:
+        cur.execute(DDL_SALIDAS)
+    aviso = revisar_texto(conn, rol, "salidas.contenido", titulo + "\n" + contenido)
+    if datos is not None:
+        revisar_texto(conn, rol, "salidas.datos", json.dumps(datos, ensure_ascii=False))
+    with conn.cursor() as cur:
+        cur.execute("INSERT INTO salidas (rol, titulo, periodo, contenido, datos, creada_por) VALUES (%s,%s,%s,%s,%s::jsonb,%s) RETURNING id",
+                    (rol, titulo, periodo or None, contenido, json.dumps(datos, ensure_ascii=False) if datos is not None else None, creada_por))
+        sid = cur.fetchone()[0]
+    auditar(conn, rol, "guardar_salida", creada_por, None, {"id": sid, "titulo": titulo})
+    conn.commit()
+    return {"guardada": True, "id": sid, "rol": rol, "titulo": titulo, **({"aviso_seguridad": aviso} if aviso else {})}
+
+
+def listar_salidas(conn, rol="", limite=30):
+    with conn.cursor() as cur:
+        cur.execute(DDL_SALIDAS)
+    conn.commit()
+    filas = _q(conn, """SELECT id, rol, titulo, periodo, creada_por, momento, length(contenido) AS caracteres, (datos IS NOT NULL) AS tiene_datos
+                        FROM salidas WHERE (%s = '' OR rol = %s) ORDER BY momento DESC LIMIT %s""", (rol.upper(), rol.upper(), int(limite)))
+    return [{**f, "momento": _txt(f["momento"])} for f in filas]
+
+
+def ver_salida(conn, id_salida):
+    with conn.cursor() as cur:
+        cur.execute(DDL_SALIDAS)
+    f = _uno(conn, "SELECT * FROM salidas WHERE id = %s", (int(id_salida),))
+    if not f:
+        raise ValueError(f"No existe la salida {id_salida}.")
+    return {**f, "momento": _txt(f["momento"])}
+
+
+ESTRUCTURA_TABLERO = {
+    "como_leer": "tablero_quirurgico(equipo, semana='') devuelve un objeto JSON. En un artefacto: (await mcp.callTool('<conector>', 'tablero_quirurgico', {equipo})).payload, o watchTool para mantenerlo al día.",
+    "campos": {
+        "hoy": "fecha de referencia del sistema (AAAA-MM-DD)", "semana": "lunes de la semana que se muestra", "dias_semana": "días hábiles de esa semana",
+        "parametros": "reglas y metas (max_espera_P1, rotacion_min, max_uci_dia, meta_utilizacion…)",
+        "salas": "[{id_sala, descripcion, solo_p1, hora_inicio, hora_fin}]", "cirujanos": "[{codigo, especialidad, dias, dias_texto, hora_fin}]",
+        "equipos": "[{id_equipo, tipo, descripcion, id_sala, mantenimiento_vence}]", "novedades": "[{fecha, tipo, recurso, descripcion}]",
+        "casos": "[{sq, prioridad, estado, procedimiento_nombre, especialidad, tipo_cirugia, duracion_min, cirujano, requiere_uci, aseguradora, fecha_solicitud, dias_espera, max_espera, atrasado, autorizacion{estado,numero,vigente_hasta}, preparacion{ITEM: OK|PENDIENTE|NO_APLICA}, insumos[{id,tipo,descripcion,estado,vence,registro}], confirmacion, ingreso[items], chequeo{momento: completo}, tiempos{entrada,incision,cierre,salida,destino}, notas[], cancelaciones[], programado{fecha,sala,hora_inicio,hora_fin,estado_programacion,version}, etapas[[estado,detalle]×10], etapa_actual, etapa_actual_nombre, responsable_siguiente, bloqueos[], listo_para_sala, puede_pasar_a_sala, falta_para_sala[]} (contable y consulta además: costo_estimado, tarifa, soportes, riesgo_glosa, factura)]",
+        "programacion": "{semana, version, estado BORRADOR|APROBADA, asignaciones[{sq,fecha,sala,hora_inicio,hora_fin}], verificacion{cumple, errores[], avisos[]}}",
+        "revision_activa": "[{urgencia 1-3, tipo, sq, detalle, responsable, hora_limite}] ordenada por urgencia",
+        "indicadores": "{indicadores[{indicador, valor, meta, sentido, resultado, formula, numerador, denominador}], duracion_estimada_vs_real[], glosas{}}",
+        "glosas": "(solo contable y consulta) [{id, numero_factura, sq, concepto, valor, limite_respuesta, dias_habiles_restantes, estado}]",
+        "salidas": "últimas salidas guardadas por todas las áreas [{id, rol, titulo, periodo, creada_por, momento}]",
+        "etapas": "catálogo de las 10 etapas con su responsable", "items_chequeo": "ítems de cada momento de la lista de chequeo",
+        "items_ingreso": "ítems del ingreso del día", "items_preparacion": "ítems de la preparación prequirúrgica",
+    },
+    "estados_de_etapa": "ok | pendiente | bloqueado | en_curso",
+    "errores": "Si algo no se puede hacer, la herramienta responde {\"error\": \"motivo\"} (no lanza excepción): muéstrelo a la persona.",
+}
+
+
+def servicios(rol, herramientas):
+    return {"rol": rol, "conector": "qx " + rol.lower(), "herramientas": herramientas, "estructura_del_tablero": ESTRUCTURA_TABLERO,
+            "reglas": "Todas piden equipo (0-3). Solo códigos SQ; cargos, nunca nombres. Las escrituras quedan en la auditoría. "
+                      "Las reglas de POL-QX-002 las verifica el servidor.",
+            "para_un_artefacto": "Declare la capacidad mcp con el servidor '" + "qx " + rol.lower() + "' y las herramientas que use. "
+                                 "Lea con tablero_quirurgico, escriba con las herramientas de su rol y guarde cada informe con guardar_salida."}
