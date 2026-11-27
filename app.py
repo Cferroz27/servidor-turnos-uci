@@ -354,7 +354,8 @@ _starlette = Starlette(
     lifespan=ciclo_de_vida,
 )
 
-_RUTA_CON_CLAVE = re.compile(r"^/(" + "|".join(re.escape(r) for r in SERVIDORES) + r")/([^/]+)/mcp/?$")
+# La clave puede traer «/», «+» o «=» (las que genera Render): se toma todo lo que hay entre la ruta del rol y /mcp.
+_RUTA_CON_CLAVE = re.compile(r"^/(" + "|".join(re.escape(r) for r in SERVIDORES) + r")/(.+)/mcp/?$")
 
 
 async def app(scope, receive, send):
