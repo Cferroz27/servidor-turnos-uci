@@ -15,7 +15,7 @@ from zoneinfo import ZoneInfo
 
 from mcp.types import ToolAnnotations
 
-from . import carga, servicio as s
+from . import carga, servicio as s, sesion
 
 LECTURA = ToolAnnotations(readOnlyHint=True)
 ESCRITURA = ToolAnnotations(readOnlyHint=False, destructiveHint=False)
@@ -77,6 +77,19 @@ def construir(nuevo, conexion, a_json):
         def ver_salida(equipo: int, id_salida: int) -> str:
             """Contenido completo de una salida guardada."""
             return ejecutar(equipo, s.ver_salida, id_salida)
+
+        @srv.tool(annotations=ESCRITURA, description=(
+            f"Inicio de sesión del artefacto para el rol {rol}. cargo: el cargo de la persona (no su nombre). pin: PIN de 6 dígitos del rol, "
+            "que entrega TI del grupo. Devuelve ok, rol, vistas_permitidas y solo_lectura. Queda en la auditoría, también los intentos fallidos."))
+        def iniciar_sesion(equipo: int, cargo: str, pin: str) -> str:
+            return ejecutar(equipo, sesion.iniciar_sesion, equipo, rol, cargo, pin)
+
+        @srv.tool(annotations=LECTURA, description=(
+            "Pendientes de este rol, ordenados por urgencia: resumen {ALTA, MEDIA, BAJA} y lista de pendientes con clave (para no avisar dos veces), "
+            "urgencia 1-3, nivel, tipo, sq, detalle, hora_limite y accion_sugerida. Respuesta liviana: úsela para los avisos del artefacto (revisar cada minuto)."
+            + (" cirujano: código CIR-xx para ver solo los suyos (vacío = todos)." if rol == "CIRUJANO" else "")))
+        def mis_pendientes(equipo: int, cirujano: str = "") -> str:
+            return ejecutar(equipo, sesion.mis_pendientes, rol, cirujano or None)
 
         @srv.tool(annotations=LECTURA)
         def servicios_disponibles() -> str:
@@ -374,6 +387,12 @@ def construir(nuevo, conexion, a_json):
     # ================================================================ TI
     ti = nuevo("Quirófanos · TI", COMUN + "Rol: TI. Carga inicial, estado, auditoría y alertas de seguridad.")
     con_tablero(ti, "TI", T_DESC + "Sin costos.")
+
+    @ti.tool(annotations=LECTURA)
+    def pines_de_acceso(equipo: int) -> str:
+        """PIN de 6 dígitos de cada rol para iniciar sesión en el artefacto del equipo. Entregue a cada persona solo el de su rol.
+        La consulta queda en la auditoría."""
+        return ejecutar(equipo, sesion.pines, equipo)
 
     @ti.tool(annotations=ESCRITURA)
     def cargar_datos_quirurgicos(equipo: int, confirmar: bool = False, reiniciar: bool = False) -> str:
