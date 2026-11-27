@@ -77,6 +77,12 @@ def validar(ctx, asignaciones):
         sq, c, fecha, sala, ini, fin = x["sq"], x["c"], x["fecha"], x["sala"], x["ini"], x["fin"]
         if c["estado"] != "ACTIVO":
             err(sq, "Datos", f"El caso está {c['estado'].lower()}; no se puede programar.")
+        if not c.get("habilitado", True):
+            falta = "; ".join(c.get("falta_para_agendar", []))
+            if c["prioridad"] == "P1":
+                av(sq, "Habilitación", f"P1 agendado sin estar habilitado (falta: {falta}).")
+            else:
+                err(sq, "Habilitación", f"No está habilitado para agendar (falta: {falta}).")
         if c["solicitud_validada"] is None:
             err(sq, "Etapa 1", "La solicitud aún no ha sido validada por el área administrativa.")
         elif c["solicitud_validada"] is False:
@@ -202,10 +208,8 @@ def proponer(ctx, dias, fijas=None):
     base_err = len(validar(ctx, plan)["errores"]) if plan else 0
     for c in cands:
         motivo = None
-        if c["solicitud_validada"] is not True:
-            motivo = "solicitud sin validar"
-        elif c["prioridad"] != "P1" and not (c["autorizacion"] and c["autorizacion"]["estado"] == "APROBADA"):
-            motivo = "sin autorización aprobada"
+        if not c.get("habilitado", True):
+            motivo = "no habilitado para agendar · falta: " + "; ".join(c.get("falta_para_agendar", []))
         elif any(i["estado"] == "FALTANTE" for i in c["insumos"]):
             motivo = "insumo faltante: " + ", ".join(i["descripcion"] for i in c["insumos"] if i["estado"] == "FALTANTE")
         elif dias and any(i.get("vence") and _f(i["vence"]) < dias[0] for i in c["insumos"]):

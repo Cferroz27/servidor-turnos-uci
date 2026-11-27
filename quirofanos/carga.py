@@ -9,9 +9,52 @@ from . import datos as D
 AQUI = Path(__file__).resolve().parent
 TABLAS = ["parametros", "salas", "equipos_biomedicos", "cirujanos", "aseguradoras", "procedimientos", "novedades_recursos",
           "casos", "autorizaciones", "programaciones", "programacion_casos", "preparacion", "insumos_caso", "confirmaciones",
-          "ingreso", "lista_chequeo", "tiempos", "cancelaciones", "notas", "facturas", "glosas", "auditoria", "alertas_seguridad", "salidas"]
+          "ingreso", "lista_chequeo", "tiempos", "cancelaciones", "notas", "facturas", "glosas", "auditoria", "alertas_seguridad", "salidas", "soportes"]
 SERIALES = {"novedades_recursos": "id", "autorizaciones": "id", "programaciones": "id", "insumos_caso": "id",
-            "cancelaciones": "id", "notas": "id", "glosas": "id", "auditoria": "id", "alertas_seguridad": "id", "salidas": "id"}
+            "cancelaciones": "id", "notas": "id", "glosas": "id", "auditoria": "id", "alertas_seguridad": "id", "salidas": "id", "soportes": "id"}
+
+
+def pdf_ficticio(titulo, sq):
+    """Un PDF mínimo válido (una página de texto) para los soportes de ejemplo."""
+    import hashlib  # noqa: F401
+    texto = f"DOCUMENTO FICTICIO - TALLER IA CON CLAUDE | {titulo} | Caso {sq} | Sin datos personales"
+    texto = texto.encode("latin-1", "replace").decode("latin-1").replace("(", "[").replace(")", "]")
+    stream = f"BT /F1 11 Tf 40 780 Td ({texto}) Tj ET".encode("latin-1")
+    objs = [b"<< /Type /Catalog /Pages 2 0 R >>", b"<< /Type /Pages /Kids [3 0 R] /Count 1 >>",
+            b"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 595 842] /Resources << /Font << /F1 5 0 R >> >> /Contents 4 0 R >>",
+            b"<< /Length %d >>\nstream\n" % len(stream) + stream + b"\nendstream",
+            b"<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>"]
+    out, offs = b"%PDF-1.4\n", []
+    for i, o in enumerate(objs, 1):
+        offs.append(len(out))
+        out += b"%d 0 obj\n" % i + o + b"\nendobj\n"
+    xref = len(out)
+    out += b"xref\n0 %d\n0000000000 65535 f \n" % (len(objs) + 1) + b"".join(b"%010d 00000 n \n" % o for o in offs)
+    out += b"trailer\n<< /Size %d /Root 1 0 R >>\nstartxref\n%d\n%%%%EOF\n" % (len(objs) + 1, xref)
+    return out
+
+
+def sembrar_soportes(cur):
+    """Soportes de ejemplo: casos realizados (todos los de cobro) y casos activos con la preparación completa
+    (consentimiento firmado y autorización), para que haya pacientes habilitados para agendar desde el inicio."""
+    import hashlib
+    cur.execute("""SELECT c.sq, c.estado, p.requiere_implante,
+                          (SELECT estado FROM v_autorizacion_vigente v WHERE v.sq = c.sq) AS aut,
+                          NOT EXISTS (SELECT 1 FROM preparacion x WHERE x.sq = c.sq AND x.estado = 'PENDIENTE' AND x.item <> 'CAMA_UCI') AS prep_ok
+                   FROM casos c JOIN procedimientos p ON p.codigo = c.procedimiento""")
+    filas = []
+    for sq, estado, implante, aut, prep_ok in cur.fetchall():
+        tipos = []
+        if estado == "REALIZADO":
+            tipos = ["CONSENTIMIENTO_FIRMADO", "AUTORIZACION", "DESCRIPCION_QUIRURGICA", "REGISTRO_ANESTESIA"] + (["REGISTRO_IMPLANTE"] if implante else [])
+        elif estado == "ACTIVO" and prep_ok:
+            tipos = ["CONSENTIMIENTO_FIRMADO"] + (["AUTORIZACION"] if aut == "APROBADA" else [])
+        for t in tipos:
+            b = pdf_ficticio(t.replace("_", " ").title(), sq)
+            filas.append((sq, t, f"{t.lower()}_{sq}.pdf", "application/pdf", len(b), hashlib.sha256(b).hexdigest(), b,
+                          "CARGA", "Carga inicial"))
+    cur.executemany("""INSERT INTO soportes (sq, tipo, nombre_archivo, mime, tamano, sha256, contenido, rol, subido_por)
+                       VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s)""", filas)
 
 
 def crear_tablas(conn):
@@ -71,6 +114,7 @@ def cargar(conn, hoy, reiniciar=False, informar=print, vacia=False):
             _insertar(cur, t, filas)
         if not vacia:
             _insertar(cur, "notas", T["notas"])
+            sembrar_soportes(cur)
         for t, col in SERIALES.items():
             cur.execute(f"SELECT setval(pg_get_serial_sequence('{t}','{col}'), COALESCE(MAX({col}),0)+1, false) FROM {t}")
         # El caso con instrucciones incrustadas queda marcado desde la carga

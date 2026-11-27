@@ -281,3 +281,21 @@ CREATE TABLE IF NOT EXISTS salidas (
   momento     TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 CREATE INDEX IF NOT EXISTS ix_salidas ON salidas(rol, momento DESC);
+
+-- ============================================================ SOPORTES (archivos por caso: consentimiento, autorización, soportes de cobro)
+CREATE TABLE IF NOT EXISTS soportes (
+  id              SERIAL PRIMARY KEY,
+  sq              TEXT NOT NULL REFERENCES casos(sq) ON DELETE CASCADE,
+  tipo            TEXT NOT NULL CHECK (tipo IN ('CONSENTIMIENTO_FIRMADO','AUTORIZACION','EXAMENES','VALORACION_PREANESTESICA',
+                                                'DESCRIPCION_QUIRURGICA','REGISTRO_ANESTESIA','LISTA_CHEQUEO','REGISTRO_IMPLANTE',
+                                                'FACTURA','RESPUESTA_GLOSA','OTRO')),
+  nombre_archivo  TEXT NOT NULL,
+  mime            TEXT NOT NULL,
+  tamano          INT NOT NULL,
+  sha256          TEXT NOT NULL,
+  contenido       BYTEA NOT NULL,
+  rol             TEXT NOT NULL,
+  subido_por      TEXT NOT NULL,
+  momento         TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS ix_soportes_sq ON soportes(sq, tipo);

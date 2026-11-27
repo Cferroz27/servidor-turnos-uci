@@ -35,13 +35,34 @@ def construir(nuevo, conexion, a_json):
         except Exception as e:
             return a_json({"error": str(e)})
 
-    def con_tablero(srv, rol, descripcion):
+    def con_soportes(srv, rol, subir=True, descargar=True):
+        if subir:
+            @srv.tool(annotations=ESCRITURA, description=(
+                "Sube un soporte (archivo PDF, PNG o JPG de hasta 5 MB) a un caso. Tipos que puede subir este rol: "
+                + ", ".join(s.TIPOS_POR_ROL[rol]) + ". contenido_base64: el archivo en base64 (desde un artefacto, el archivo elegido por la persona). "
+                "nombre_archivo sin datos personales (por ejemplo consentimiento_SQ-1001.pdf). Devuelve si el caso ya quedó habilitado para agendar."))
+            def subir_soporte(equipo: int, sq: str, tipo: str, nombre_archivo: str, contenido_base64: str, subido_por: str) -> str:
+                return ejecutar(equipo, s.subir_soporte, rol, sq, tipo, nombre_archivo, contenido_base64, subido_por)
+
+        @srv.tool(annotations=LECTURA)
+        def listar_soportes(equipo: int, sq: str = "") -> str:
+            """Soportes cargados (de un caso o de todos): tipo, archivo, tamaño, quién y cuándo. Sin el contenido."""
+            return ejecutar(equipo, s.listar_soportes, sq)
+
+        if descargar:
+            @srv.tool(annotations=LECTURA)
+            def descargar_soporte(equipo: int, id_soporte: int) -> str:
+                """Devuelve un soporte con su contenido en base64 y su tipo (para verlo o descargarlo). Queda en la auditoría."""
+                return ejecutar(equipo, s.descargar_soporte, rol, id_soporte)
+
+    def con_tablero(srv, rol, descripcion, con_salida=True):
         @srv.tool(description=descripcion, annotations=LECTURA)
         def tablero_quirurgico(equipo: int, semana: str = "") -> str:
             return ejecutar(equipo, s.tablero, rol, semana or None)
 
-        @srv.tool(annotations=ESCRITURA)
-        def guardar_salida(equipo: int, titulo: str, contenido: str, creada_por: str, periodo: str = "", datos: dict | list | None = None) -> str:
+        if con_salida:
+          @srv.tool(annotations=ESCRITURA)
+          def guardar_salida(equipo: int, titulo: str, contenido: str, creada_por: str, periodo: str = "", datos: dict | list | None = None) -> str:
             """Guarda en el servidor una salida o informe de este rol (asunto, resumen de tres líneas y detalle), para que las otras áreas
             la consulten. contenido: texto o markdown, solo códigos SQ (se rechazan nombres, documentos, teléfonos y correos).
             periodo: '2026-11-30' o 'semana 2026-11-30'. datos: tabla o cifras opcionales en JSON. creada_por: cargo."""
@@ -161,39 +182,64 @@ def construir(nuevo, conexion, a_json):
         """Deja una nota para el equipo en el caso (autor = cargo)."""
         return ejecutar(equipo, s.dejar_nota, sq, autor, texto, "ASISTENCIAL")
 
-    # ================================================================ CIRUJANO
-    cir = nuevo("Quirófanos · Cirujano", COMUN + "Rol: cirujano. Registra solicitudes, revisa sus casos, confirma la programación, "
-                "marca insumos especiales y deja notas. No ve costos ni puede cambiar la programación.")
-    con_tablero(cir, "CIRUJANO", T_DESC + "Sin costos.")
+    @asis.tool(annotations=LECTURA)
+    def plantilla_listado(equipo: int) -> str:
+        """Columnas, plantilla CSV y catálogo (procedimientos, cirujanos, aseguradoras) para preparar el listado de pacientes nuevos."""
+        return ejecutar(equipo, s.plantilla_listado)
+
+    @asis.tool(annotations=ESCRITURA)
+    def cargar_listado_pacientes(equipo: int, cargado_por: str, csv_texto: str = "", filas: list[dict] | None = None) -> str:
+        """Carga el listado de pacientes nuevos (lo sube la jefe o el área asistencial). Envíe csv_texto (el contenido del CSV, separado por
+        coma o punto y coma) o filas (lista de objetos). Columnas: sq (opcional), procedimiento, cirujano, prioridad, aseguradora,
+        fecha_solicitud, requiere_uci, observaciones. Limpia duplicados y filas de prueba, valida cada fila, descarta las que traen datos
+        personales y crea los casos. Devuelve filas recibidas, válidas y descartadas con el motivo. Confirme antes de llamarla."""
+        return ejecutar(equipo, s.cargar_listado_pacientes, cargado_por, filas, csv_texto)
+
+    @asis.tool(annotations=ESCRITURA)
+    def registrar_solicitud(equipo: int, cirujano: str, procedimiento: str, prioridad: str, id_aseguradora: str, observaciones: str = "",
+                            requiere_uci: bool | None = None) -> str:
+        """Registra un paciente nuevo suelto (fuera del listado). cirujano CIR-xx, procedimiento PX-xxx, prioridad P1-P3, aseguradora ASG-xx."""
+        return ejecutar(equipo, s.registrar_solicitud, cirujano, procedimiento, prioridad, id_aseguradora, observaciones, requiere_uci)
+
+    @asis.tool(annotations=LECTURA)
+    def pacientes_habilitados(equipo: int) -> str:
+        """Pacientes habilitados para agendar (documentos y procesos aprobados) y los que aún no, con lo que les falta y quién lo resuelve."""
+        return ejecutar(equipo, s.pacientes_habilitados)
+
+    @asis.tool(annotations=ESCRITURA)
+    def registrar_confirmacion_cirujano(equipo: int, sq: str, confirmado: bool, responsable: str, ayudante: str = "",
+                                        insumos_especiales: str = "", nota: str = "") -> str:
+        """Etapa 6. Registra que el cirujano confirmó (o no) fecha, hora, equipo, ayudante e insumos especiales. Lo registra la jefe."""
+        return ejecutar(equipo, s.registrar_confirmacion_cirujano, sq, confirmado, responsable, ayudante, insumos_especiales, nota)
+
+    @asis.tool(annotations=LECTURA)
+    def procedimientos_del_dia(equipo: int, fecha: str) -> str:
+        """Procedimientos publicados de la fecha, por sala y hora, con su estado."""
+        return ejecutar(equipo, s.procedimientos_del_dia, fecha)
+
+    con_soportes(asis, "ASISTENCIAL")
+
+    # ================================================================ CIRUJANO (solo lectura de procedimientos)
+    cir = nuevo("Quirófanos · Cirujano", COMUN + "Rol: cirujano. SOLO LECTURA: ve los procedimientos programados y publicados (los suyos o los de todos) "
+                "y la programación publicada. No ve costos, aseguradoras ni soportes, y no cambia datos.")
+    con_tablero(cir, "CIRUJANO", T_DESC + "Para el cirujano: solo los procedimientos de programaciones aprobadas y publicadas, sin costos ni datos administrativos.",
+                con_salida=False)
+
+    @cir.tool(annotations=LECTURA)
+    def procedimientos_del_dia(equipo: int, fecha: str, cirujano: str = "") -> str:
+        """Procedimientos publicados de una fecha (AAAA-MM-DD), por sala y hora: caso SQ, procedimiento, cirujano, prioridad, UCI y estado
+        (programada, lista para sala, realizada). cirujano: CIR-xx para ver solo los suyos; vacío para todos."""
+        return ejecutar(equipo, s.procedimientos_del_dia, fecha, cirujano)
+
+    @cir.tool(annotations=LECTURA)
+    def mis_procedimientos(equipo: int, cirujano: str) -> str:
+        """Todos los procedimientos publicados del cirujano (CIR-xx), con fecha, sala, hora y estado."""
+        return ejecutar(equipo, s.mis_procedimientos, cirujano)
 
     @cir.tool(annotations=LECTURA)
     def catalogo(equipo: int) -> str:
-        """Procedimientos (con duración, equipo, implante y sangre), cirujanos con sus días y aseguradoras."""
+        """Procedimientos (duración, equipo, implante y sangre), cirujanos con sus días y aseguradoras."""
         return ejecutar(equipo, s.catalogo)
-
-    @cir.tool(annotations=ESCRITURA)
-    def registrar_solicitud(equipo: int, cirujano: str, procedimiento: str, prioridad: str, id_aseguradora: str,
-                            observaciones: str = "", requiere_uci: bool | None = None) -> str:
-        """Etapa 1. Registra una solicitud de cirugía y devuelve el código SQ del caso. cirujano: CIR-xx. procedimiento: PX-xxx.
-        prioridad: P1, P2 o P3. id_aseguradora: ASG-xx. Sin datos personales del paciente."""
-        return ejecutar(equipo, s.registrar_solicitud, cirujano, procedimiento, prioridad, id_aseguradora, observaciones, requiere_uci)
-
-    @cir.tool(annotations=LECTURA)
-    def mis_casos(equipo: int, cirujano: str) -> str:
-        """Casos activos del cirujano con su etapa, lo que falta para que el paciente entre a sala y sus confirmaciones pendientes."""
-        return ejecutar(equipo, s.mis_casos, cirujano)
-
-    @cir.tool(annotations=ESCRITURA)
-    def confirmar_caso(equipo: int, sq: str, cirujano: str, confirmado: bool = True, ayudante: str = "", insumos_especiales: str = "",
-                       nota: str = "") -> str:
-        """Etapa 6. El cirujano confirma fecha, hora, equipo, insumos especiales y ayudante (código). Un insumo especial queda
-        PENDIENTE para la central de esterilización y el almacén."""
-        return ejecutar(equipo, s.confirmar_caso, sq, cirujano, confirmado, ayudante, insumos_especiales, nota)
-
-    @cir.tool(annotations=ESCRITURA)
-    def dejar_nota_cirujano(equipo: int, sq: str, cirujano: str, texto: str) -> str:
-        """Deja una nota para el equipo en el caso."""
-        return ejecutar(equipo, s.dejar_nota, sq, cirujano.upper(), texto, "CIRUJANO")
 
     # ================================================================ ADMINISTRATIVO
     adm = nuevo("Quirófanos · Administrativo", COMUN + "Rol: administrativo (admisiones, autorizaciones y citación).")
@@ -220,6 +266,13 @@ def construir(nuevo, conexion, a_json):
         """Pacientes con cirugía aprobada en la fecha, con hora de citación, sala y estado de la autorización."""
         return ejecutar(equipo, s.pacientes_por_citar, fecha)
 
+    @adm.tool(annotations=LECTURA)
+    def pacientes_habilitados(equipo: int) -> str:
+        """Pacientes habilitados para agendar y los que aún no, con lo que les falta."""
+        return ejecutar(equipo, s.pacientes_habilitados)
+
+    con_soportes(adm, "ADMINISTRATIVO")
+
     # ================================================================ INSUMOS
     ins = nuevo("Quirófanos · Insumos y esterilización", COMUN + "Rol: central de esterilización, almacén de cirugía e ingeniería biomédica. "
                 "Verifica sets, material, implantes y equipos de cada cirugía. Un insumo faltante, vencido o no estéril bloquea la cirugía.")
@@ -241,6 +294,8 @@ def construir(nuevo, conexion, a_json):
         """Registra que un recurso no estará disponible un día. tipo: EQUIPO (EQ-ARC-01…), SALA (Q1…) o CIRUJANO (CIR-xx).
         Devuelve las cirugías programadas afectadas."""
         return ejecutar(equipo, s.registrar_novedad_recurso, fecha, tipo, recurso, descripcion, registrada_por, "INSUMOS")
+
+    con_soportes(ins, "INSUMOS", descargar=False)
 
     # ================================================================ CONTABLE
     con = nuevo("Quirófanos · Contable", COMUN + "Rol: contable (costos, facturación, cartera y glosas). Conceptos de glosa de la "
@@ -285,6 +340,8 @@ def construir(nuevo, conexion, a_json):
         """Costo estimado e ingreso esperado de las cirugías realizadas por tipo, y el costo de las cancelaciones."""
         return ejecutar(equipo, s.costos, desde, hasta)
 
+    con_soportes(con, "CONTABLE")
+
     # ================================================================ CONSULTA (jurídico, datos, gerencia)
     cons = nuevo("Quirófanos · Consulta", COMUN + "Rol: consulta (jurídico, análisis de datos y gerencia). Solo lectura. "
                  "Jurídico solo señala riesgos; no emite conceptos legales.")
@@ -307,6 +364,13 @@ def construir(nuevo, conexion, a_json):
         """Tabla limpia (columnas y filas) de casos para análisis o exportar a CSV. Sin datos personales."""
         return ejecutar(equipo, s.datos_limpios, desde, hasta)
 
+    @cons.tool(annotations=LECTURA)
+    def pacientes_habilitados(equipo: int) -> str:
+        """Pacientes habilitados para agendar y los que aún no, con lo que les falta."""
+        return ejecutar(equipo, s.pacientes_habilitados)
+
+    con_soportes(cons, "CONSULTA", subir=False)
+
     # ================================================================ TI
     ti = nuevo("Quirófanos · TI", COMUN + "Rol: TI. Carga inicial, estado, auditoría y alertas de seguridad.")
     con_tablero(ti, "TI", T_DESC + "Sin costos.")
@@ -323,6 +387,8 @@ def construir(nuevo, conexion, a_json):
                 return a_json({"cargado": True, **carga.cargar(conn, hoy, reiniciar=reiniciar, informar=lambda *_: None)})
         except Exception as e:
             return a_json({"error": str(e)})
+
+    con_soportes(ti, "TI", subir=False, descargar=False)
 
     @ti.tool(annotations=ESCRITURA)
     def crear_base_del_equipo(equipo: int, con_datos_de_ejemplo: bool = True, confirmar: bool = False, reiniciar: bool = False) -> str:

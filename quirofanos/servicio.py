@@ -180,6 +180,7 @@ def contexto(conn):
                            OR (c.estado = 'REALIZADO' AND c.sq NOT IN (SELECT sq FROM facturas))""", (H - dt.timedelta(days=7), H - dt.timedelta(days=7)))
     sqs = [f["sq"] for f in filas]
     prep, ins, conf, ingr, chk, tiem, notas, canc = (defaultdict(dict), defaultdict(list), {}, defaultdict(dict), {}, {}, defaultdict(list), defaultdict(list))
+    sop = defaultdict(list)
     if sqs:
         for r in _q(conn, "SELECT * FROM preparacion WHERE sq = ANY(%s)", (sqs,)):
             prep[r["sq"]][r["item"]] = {"estado": r["estado"], "vence": _txt(r["vence"]), "responsable": r["responsable"]}
@@ -199,6 +200,9 @@ def contexto(conn):
             notas[r["sq"]].append({"autor": r["autor"], "texto": r["texto"], "momento": _txt(r["momento"])})
         for r in _q(conn, "SELECT * FROM cancelaciones WHERE sq = ANY(%s) ORDER BY momento", (sqs,)):
             canc[r["sq"]].append({"fecha": r["fecha"].isoformat(), "motivo": r["motivo"], "mismo_dia": r["mismo_dia"], "responsable": r["responsable"]})
+        asegurar_soportes(conn)
+        for r in _q(conn, "SELECT id, sq, tipo, nombre_archivo, mime, tamano, rol, subido_por, momento FROM soportes WHERE sq = ANY(%s) ORDER BY momento", (sqs,)):
+            sop[r["sq"]].append({**r, "momento": _txt(r["momento"])})
     for f in filas:
         sq = f["sq"]
         maximo = int(P[f"max_espera_{f['prioridad']}"])
@@ -217,7 +221,9 @@ def contexto(conn):
             "preparacion_detalle": prep[sq], "insumos": ins[sq], "confirmacion": conf.get(sq), "ingreso": ingr[sq],
             "chequeo": chk.get(sq, {}), "tiempos": tiem.get(sq), "notas": notas[sq], "cancelaciones": canc[sq],
             "realizado": f["estado"] == "REALIZADO", "costo_estimado": float(f["costo_estimado"]), "tarifa": float(f["tarifa"]),
+            "soportes_archivos": sop[sq], "tipos_soporte": sorted({x["tipo"] for x in sop[sq]}),
         }
+        casos[sq]["habilitado"], casos[sq]["falta_para_agendar"] = habilitado_para_agendar(casos[sq])
     return {"parametros": P, "hoy": H, "salas": salas, "equipos": equipos, "cirujanos": cirujanos, "novedades": novedades, "casos": casos}
 
 
@@ -341,6 +347,37 @@ def listo_para_sala(c, slot, H):
     return (not falt), falt, nota
 
 
+REQUISITOS_HABILITACION = "solicitud validada, autorización aprobada (P1 puede ir en trámite), preparación completa (salvo cama de UCI, que se confirma el día anterior), consentimiento firmado cargado y autorización cargada"
+RESPONSABLE_FALTA = {"solicitud": "Administrativo", "autorización": "Administrativo", "preparación": "Enfermería y anestesia",
+                     "soporte": "Asistencial (soportes) / Administrativo (autorización)"}
+
+
+def habilitado_para_agendar(c):
+    """Paciente habilitado para que la jefe lo agende: documentos y procesos aprobados."""
+    falt = []
+    if c["solicitud_validada"] is not True:
+        falt.append("solicitud validada")
+    aut = c["autorizacion"]
+    aut_ok = bool(aut and aut["estado"] == "APROBADA")
+    if not aut_ok and not (c["prioridad"] == "P1" and not (aut and aut["estado"] == "NEGADA")):
+        falt.append("autorización aprobada")
+    for k, v in c["preparacion"].items():
+        if v == "PENDIENTE" and k != "CAMA_UCI":
+            falt.append("preparación: " + nom(k))
+    tipos = set(c.get("tipos_soporte", []))
+    if "CONSENTIMIENTO_FIRMADO" not in tipos:
+        falt.append("soporte: consentimiento firmado")
+    if aut_ok and "AUTORIZACION" not in tipos:
+        falt.append("soporte: autorización")
+    return (not falt and c["estado"] == "ACTIVO"), falt
+
+
+def responsable_de(falta):
+    if falta.startswith("soporte: autorización") or falta.startswith("autorización") or falta.startswith("solicitud"):
+        return "Administrativo"
+    return "Asistencial (enfermería y anestesia)"
+
+
 def soportes_de(c):
     """Soportes de cobro disponibles a partir de lo registrado (simplificación del Anexo 1 de la Res. 2284 de 2023)."""
     aut = c["autorizacion"]
@@ -349,17 +386,22 @@ def soportes_de(c):
     fecha_cx = _f(t["fecha"]) if t.get("fecha") else None
     cons = c["preparacion_detalle"].get("CONSENTIMIENTO_INFORMADO", {})
     implantes = [i for i in c["insumos"] if i["tipo"] == "IMPLANTE"]
+    tipos = set(c.get("tipos_soporte", []))
     return {
-        "autorizacion": bool(aut and aut["estado"] == "APROBADA" and aut["numero"]),
-        "descripcion_quirurgica": bool(t.get("incision") and t.get("cierre") and chk.get("ANTES_SALIR", {}).get("completo")),
-        "registro_anestesia": bool(c["preparacion"].get("VALORACION_PREANESTESICA") == "OK" and chk.get("ANTES_ANESTESIA", {}).get("completo")),
-        "registro_insumos_e_implantes": all(i["estado"] == "OK" for i in c["insumos"]) and all(i["registro"] for i in implantes),
-        "consentimiento_informado": c["preparacion"].get("CONSENTIMIENTO_INFORMADO") == "OK" and not (cons.get("vence") and fecha_cx and _f(cons["vence"]) < fecha_cx),
+        "autorizacion": bool(aut and aut["estado"] == "APROBADA" and aut["numero"]) and "AUTORIZACION" in tipos,
+        "descripcion_quirurgica": bool(t.get("incision") and t.get("cierre") and chk.get("ANTES_SALIR", {}).get("completo")) and "DESCRIPCION_QUIRURGICA" in tipos,
+        "registro_anestesia": bool(c["preparacion"].get("VALORACION_PREANESTESICA") == "OK" and chk.get("ANTES_ANESTESIA", {}).get("completo")) and "REGISTRO_ANESTESIA" in tipos,
+        "registro_insumos_e_implantes": all(i["estado"] == "OK" for i in c["insumos"]) and all(i["registro"] for i in implantes)
+                                        and (not implantes or "REGISTRO_IMPLANTE" in tipos),
+        "consentimiento_informado": c["preparacion"].get("CONSENTIMIENTO_INFORMADO") == "OK" and "CONSENTIMIENTO_FIRMADO" in tipos
+                                    and not (cons.get("vence") and fecha_cx and _f(cons["vence"]) < fecha_cx),
         "resumen_de_atencion": bool(t.get("destino")),
         "rips": True,  # supuesto: lo genera el sistema de facturación institucional
     }
 
 
+ARCHIVO_POR_SOPORTE = {"autorizacion": "AUTORIZACION", "descripcion_quirurgica": "DESCRIPCION_QUIRURGICA", "registro_anestesia": "REGISTRO_ANESTESIA",
+                       "registro_insumos_e_implantes": "REGISTRO_IMPLANTE", "consentimiento_informado": "CONSENTIMIENTO_FIRMADO"}
 CONCEPTO_POR_SOPORTE = {"autorizacion": "AU", "descripcion_quirurgica": "SO", "registro_anestesia": "SO",
                         "registro_insumos_e_implantes": "SO", "consentimiento_informado": "SO", "resumen_de_atencion": "SO", "rips": "SO"}
 
@@ -381,6 +423,8 @@ def tablero(conn, rol, semana=None, cirujano=None):
         if cirujano and c["cirujano"] != cirujano:
             continue
         slot = slots.get(sq)
+        if rol == "CIRUJANO" and not (slot and slot["estado_programacion"] == "APROBADA"):
+            continue   # el cirujano solo ve los procedimientos programados y publicados
         fac = facturas.get(sq)
         et, actual = etapas(c, slot, {"numero": fac["numero"], "estado": fac["estado"]} if fac else None, H)
         listo, falt, nota = listo_para_sala(c, slot, H) if slot else (False, ["programación"], None)
@@ -396,6 +440,11 @@ def tablero(conn, rol, semana=None, cirujano=None):
         item["chequeo"] = {m: v["completo"] for m, v in c["chequeo"].items()}
         if c["estado"] != "ACTIVO":
             item.pop("observaciones", None)
+        item.update(habilitado_para_agendar=c["habilitado"], falta_para_agendar=c["falta_para_agendar"],
+                    soportes_cargados=[{k: x[k] for k in ("id", "tipo", "nombre_archivo", "tamano", "subido_por", "momento")} for x in c["soportes_archivos"]])
+        if rol == "CIRUJANO":
+            for k in ("aseguradora", "autorizacion", "soportes_cargados", "observaciones"):
+                item.pop(k, None)
         item.update(programado=slot, etapas=[[x["estado"], x["detalle"]] for x in et], etapa_actual=actual["n"], etapa_actual_nombre=actual["etapa"],
                     responsable_siguiente=actual["responsable"], bloqueos=bloqueos, listo_para_sala=listo and "LISTO_PARA_SALA" in c["ingreso"],
                     puede_pasar_a_sala=listo, falta_para_sala=falt, nota_sala=nota)
@@ -431,6 +480,13 @@ def tablero(conn, rol, semana=None, cirujano=None):
                              "detalle": f"{c['prioridad']} · {c['aseguradora']} · {'en trámite' if aut else 'sin solicitar'}",
                              "responsable": "Administrativo",
                              "hora_limite": lim("12:00")})
+        if not c["habilitado"] and not (slot and slot["estado_programacion"] == "APROBADA") and c["solicitud_validada"] is not False:
+            por_resp = defaultdict(list)
+            for f_ in c["falta_para_agendar"]:
+                por_resp[responsable_de(f_)].append(f_)
+            for resp, fs in por_resp.items():
+                revision.append({"urgencia": 1 if c["prioridad"] == "P1" else 2 if c["atrasado"] else 3, "tipo": "Falta para habilitar", "sq": sq,
+                                 "detalle": "; ".join(fs), "responsable": resp, "hora_limite": "Cierre semanal: jueves 12:00"})
         if c["solicitud_validada"] is None:
             revision.append({"urgencia": 2, "tipo": "Solicitud sin validar", "sq": sq, "detalle": f"{c['procedimiento_nombre']} · {c['cirujano']}",
                              "responsable": "Administrativo", "hora_limite": "Cierre semanal: jueves 12:00"})
@@ -461,6 +517,8 @@ def tablero(conn, rol, semana=None, cirujano=None):
     for a in alertas:
         revision.append({"urgencia": 1, "tipo": "Alerta de seguridad", "sq": a["sq"], "detalle": a["motivo"], "responsable": "TI",
                          "hora_limite": "Inmediato"})
+    if rol == "CIRUJANO":
+        revision = []
     revision.sort(key=lambda x: (x["urgencia"], x["hora_limite"], x["sq"] or ""))
     prog = None
     vig = borr or aprob
@@ -474,7 +532,11 @@ def tablero(conn, rol, semana=None, cirujano=None):
         "parametros": {k: v for k, v in P.items()}, "salas": list(ctx["salas"].values()), "equipos": ctx["equipos"],
         "cirujanos": list(ctx["cirujanos"].values()), "novedades": ctx["novedades"],
         "casos": sorted(casos, key=lambda x: ({"P1": 0, "P2": 1, "P3": 2}[x["prioridad"]], -x["dias_espera"])),
-        "programacion": prog, "revision_activa": revision, "alertas_seguridad": len(alertas),
+        "programacion": prog if rol != "CIRUJANO" or (prog and prog["estado"] == "APROBADA") else None,
+        "revision_activa": revision, "alertas_seguridad": len(alertas) if rol != "CIRUJANO" else 0,
+        "habilitados_para_agendar": [c["sq"] for c in casos if c.get("habilitado_para_agendar")
+                                     and not (c["programado"] and c["programado"]["estado_programacion"] == "APROBADA")],
+        "requisitos_habilitacion": REQUISITOS_HABILITACION,
         "etapas": [{"n": i + 1, "etapa": ETAPAS[i], "responsable": RESPONSABLES[i]} for i in range(10)],
         "items_chequeo": ITEMS_CHEQUEO, "items_ingreso": ITEMS_INGRESO, "items_preparacion": ITEMS_PREP,
     }
@@ -482,6 +544,9 @@ def tablero(conn, rol, semana=None, cirujano=None):
         salida["salidas"] = listar_salidas(conn, "", 20)
     except Exception:
         salida["salidas"] = []
+    if rol == "CIRUJANO":
+        salida["indicadores"] = None
+        return salida
     try:
         salida["indicadores"] = indicadores(conn)
     except Exception as e:  # los indicadores no deben tumbar el tablero
@@ -637,8 +702,20 @@ def aprobar_programacion(conn, semana, aprobada_por, rol="ASISTENCIAL"):
             cur.execute("UPDATE casos SET hora_citacion = %s WHERE sq = %s", (reglas.a_hora(max(reglas.a_min(a["hora_inicio"]) - cit, 5 * 60)), a["sq"]))
     auditar(conn, rol, "aprobar_programacion", aprobada_por, None, {"semana": sem.isoformat(), "version": borr["version"], "casos": len(asig)})
     conn.commit()
-    return {"aprobada": True, "semana": sem.isoformat(), "version": borr["version"], "casos": len(asig), "avisos": v["avisos"],
-            "mensaje": f"Programación aprobada. Se fijó la hora de citación ({cit} minutos antes). Las áreas ya ven sus pendientes en el tablero."}
+    # Publicación: la programación aprobada queda como salida para todas las áreas (y la ven los cirujanos)
+    lineas = []
+    for d in sorted({a["fecha"] for a in asig}):
+        lineas.append(f"\n{d}")
+        for a in sorted((x for x in asig if x["fecha"] == d), key=lambda x: (x["sala"], x["hora_inicio"])):
+            c = ctx["casos"].get(a["sq"], {})
+            lineas.append(f"  {a['sala']} {a['hora_inicio']}-{a['hora_fin']} · {a['sq']} {c.get('prioridad', '')} · {c.get('procedimiento_nombre', '')} · "
+                          f"{c.get('cirujano', '')}{' · UCI' if c.get('requiere_uci') else ''} · citación {reglas.a_hora(max(reglas.a_min(a['hora_inicio']) - cit, 5 * 60))}")
+    pub = guardar_salida(conn, rol, f"Programación publicada · semana {sem.isoformat()} · versión {borr['version']}",
+                         f"Asunto: programación quirúrgica aprobada de la semana del {sem.isoformat()}\n{len(asig)} procedimientos, aprobada por {aprobada_por}.\n" + "\n".join(lineas),
+                         aprobada_por, f"semana {sem.isoformat()}", [{k: a[k] for k in ("sq", "fecha", "sala", "hora_inicio", "hora_fin")} for a in asig])
+    return {"aprobada": True, "publicada": True, "id_salida_publicada": pub["id"], "semana": sem.isoformat(), "version": borr["version"],
+            "casos": len(asig), "avisos": v["avisos"],
+            "mensaje": f"Programación aprobada y publicada. Se fijó la hora de citación ({cit} minutos antes). Los cirujanos ya ven sus procedimientos."}
 
 
 # ------------------------------------------------------------------ ASISTENCIAL: preparación, ingreso, sala, egreso
@@ -783,7 +860,8 @@ def catalogo(conn):
             "aseguradoras": _q(conn, "SELECT * FROM aseguradoras ORDER BY id_aseguradora")}
 
 
-def registrar_solicitud(conn, cirujano, procedimiento, prioridad, id_aseguradora, observaciones="", requiere_uci=None, rol="CIRUJANO"):
+def registrar_solicitud(conn, cirujano, procedimiento, prioridad, id_aseguradora, observaciones="", requiere_uci=None, rol="ASISTENCIAL",
+                        sq=None, fecha_solicitud=None, commit=True):
     cj = _uno(conn, "SELECT * FROM cirujanos WHERE codigo = %s AND activo", (cirujano.upper(),))
     if not cj:
         raise ValueError(f"No existe el cirujano {cirujano}. Use su código (CIR-01…).")
@@ -800,10 +878,20 @@ def registrar_solicitud(conn, cirujano, procedimiento, prioridad, id_aseguradora
     aviso = revisar_texto(conn, rol, "casos.observaciones", observaciones)
     uci = p["tipo_cirugia"] == "UCI" if requiere_uci is None else bool(requiere_uci)
     with conn.cursor() as cur:
-        cur.execute("SELECT COALESCE(MAX(substring(sq from 4)::int), 900) + 1 FROM casos")
-        sq = f"SQ-{cur.fetchone()[0]:04d}"
+        if sq:
+            sq = sq.strip().upper()
+            import re as _re
+            if not _re.fullmatch(r"SQ-\d{4,6}", sq):
+                raise ValueError(f"Código SQ inválido: {sq}. Formato SQ-1001.")
+            cur.execute("SELECT 1 FROM casos WHERE sq = %s", (sq,))
+            if cur.fetchone():
+                raise ValueError(f"El caso {sq} ya existe.")
+        else:
+            cur.execute("SELECT COALESCE(MAX(substring(sq from 4)::int), 900) + 1 FROM casos")
+            sq = f"SQ-{cur.fetchone()[0]:04d}"
         cur.execute("""INSERT INTO casos (sq, procedimiento, cirujano, prioridad, requiere_uci, id_aseguradora, fecha_solicitud, observaciones)
-                       VALUES (%s,%s,%s,%s,%s,%s,%s,%s)""", (sq, p["codigo"], cj["codigo"], prioridad, uci, id_aseguradora.upper(), hoy(conn), observaciones or None))
+                       VALUES (%s,%s,%s,%s,%s,%s,%s,%s)""", (sq, p["codigo"], cj["codigo"], prioridad, uci, id_aseguradora.upper(),
+                                                            fecha_solicitud or hoy(conn), observaciones or None))
         for it in ITEMS_PREP:
             aplica = (it != "RESERVA_SANGRE" or p["requiere_sangre"]) and (it != "CAMA_UCI" or uci)
             cur.execute("INSERT INTO preparacion (sq, item, estado) VALUES (%s,%s,%s)", (sq, it, "PENDIENTE" if aplica else "NO_APLICA"))
@@ -816,7 +904,8 @@ def registrar_solicitud(conn, cirujano, procedimiento, prioridad, id_aseguradora
         for t, d, costo in filas:
             cur.execute("INSERT INTO insumos_caso (sq, tipo, descripcion, costo) VALUES (%s,%s,%s,%s)", (sq, t, d, costo))
     auditar(conn, rol, "registrar_solicitud", cj["codigo"], sq, {"procedimiento": p["codigo"], "prioridad": prioridad})
-    conn.commit()
+    if commit:
+        conn.commit()
     out = {"registrada": True, "sq": sq, "procedimiento": p["nombre"], "prioridad": prioridad, "requiere_uci": uci,
            "siguiente": "El área administrativa valida la solicitud y tramita la autorización."}
     if aviso:
@@ -830,6 +919,16 @@ def mis_casos(conn, cirujano):
             "casos": [{k: c[k] for k in ("sq", "procedimiento_nombre", "prioridad", "dias_espera", "atrasado", "programado", "etapa_actual_nombre",
                                          "responsable_siguiente", "bloqueos", "falta_para_sala", "confirmacion", "notas")}
                       for c in t["casos"] if c["estado"] == "ACTIVO"]}
+
+
+def mis_procedimientos(conn, cirujano):
+    t = tablero(conn, "CIRUJANO", cirujano=cirujano.upper())
+    return {"cirujano": cirujano.upper(), "hoy": t["hoy"],
+            "procedimientos": sorted([{"sq": c["sq"], "fecha": c["programado"]["fecha"], "sala": c["programado"]["sala"],
+                                       "hora_inicio": c["programado"]["hora_inicio"], "procedimiento": c["procedimiento_nombre"],
+                                       "prioridad": c["prioridad"], "uci": c["requiere_uci"],
+                                       "estado": "Realizada" if c["estado"] == "REALIZADO" else "Lista para sala" if c["listo_para_sala"] else "Programada"}
+                                      for c in t["casos"]], key=lambda x: (x["fecha"], x["hora_inicio"]))}
 
 
 def confirmar_caso(conn, sq, cirujano, confirmado=True, ayudante="", insumos_especiales="", nota="", rol="CIRUJANO"):
@@ -1331,3 +1430,190 @@ def servicios(rol, herramientas):
                       "Las reglas de POL-QX-002 las verifica el servidor.",
             "para_un_artefacto": "Declare la capacidad mcp con el servidor '" + "qx " + rol.lower() + "' y las herramientas que use. "
                                  "Lea con tablero_quirurgico, escriba con las herramientas de su rol y guarde cada informe con guardar_salida."}
+
+
+# ------------------------------------------------------------------ LISTADO DE PACIENTES NUEVOS (jefe o asistencial)
+COLUMNAS_LISTADO = ["sq", "procedimiento", "cirujano", "prioridad", "aseguradora", "fecha_solicitud", "requiere_uci", "observaciones"]
+PLANTILLA_LISTADO = ("sq,procedimiento,cirujano,prioridad,aseguradora,fecha_solicitud,requiere_uci,observaciones\n"
+                     "SQ-1001,PX-101,CIR-01,P2,ASG-01,2026-11-20,no,Colelitiasis sintomática\n"
+                     "SQ-1002,PX-202,CIR-04,P1,ASG-02,26/11/2026,no,Fractura de radio distal\n")
+
+
+def plantilla_listado(conn):
+    return {"columnas": COLUMNAS_LISTADO, "obligatorias": ["procedimiento", "cirujano", "prioridad", "aseguradora"],
+            "notas": "sq opcional (si falta se asigna); fecha AAAA-MM-DD o DD/MM/AAAA (si falta, hoy); requiere_uci sí/no (si falta, según el procedimiento); "
+                     "separador coma o punto y coma. Sin nombres, documentos, teléfonos ni correos: esas filas se descartan.",
+            "plantilla_csv": PLANTILLA_LISTADO, "catalogo": catalogo(conn)}
+
+
+def _fecha_flexible(v):
+    v = (v or "").strip()
+    if not v:
+        return None
+    for fmt in ("%Y-%m-%d", "%d/%m/%Y", "%d-%m-%Y"):
+        try:
+            return dt.datetime.strptime(v, fmt).date()
+        except ValueError:
+            pass
+    raise ValueError(f"fecha inválida «{v}» (use AAAA-MM-DD o DD/MM/AAAA)")
+
+
+def cargar_listado_pacientes(conn, cargado_por, filas=None, csv_texto="", rol="ASISTENCIAL"):
+    """Limpia, valida y crea los casos de un listado. Devuelve el informe de filas válidas y descartadas."""
+    import csv
+    import io
+    if not cargado_por:
+        raise ValueError("Indique cargado_por (cargo).")
+    if csv_texto and not filas:
+        txt = csv_texto.lstrip("\ufeff")
+        sep = ";" if txt.split("\n", 1)[0].count(";") > txt.split("\n", 1)[0].count(",") else ","
+        filas = list(csv.DictReader(io.StringIO(txt), delimiter=sep))
+    if not filas:
+        raise ValueError("Envíe filas (lista de objetos) o csv_texto con encabezados. Pida plantilla_listado si la necesita.")
+    norm = lambda k: (k or "").strip().lower().replace(" ", "_").replace("ó", "o").replace("í", "i")
+    creados, descartados, vistos = [], [], set()
+    for i, f in enumerate(filas, start=2):
+        f = {norm(k): (str(v).strip() if v is not None else "") for k, v in f.items()}
+        if not any(f.values()) or (f.get("observaciones", "").lower().startswith("prueba")):
+            descartados.append({"fila": i, "sq": f.get("sq"), "motivo": "fila vacía o de prueba"})
+            continue
+        clave = (f.get("sq") or "").upper() or f"{f.get('procedimiento')}|{f.get('cirujano')}|{f.get('fecha_solicitud')}"
+        if clave in vistos:
+            descartados.append({"fila": i, "sq": f.get("sq"), "motivo": "duplicada en el listado"})
+            continue
+        vistos.add(clave)
+        try:
+            faltan = [k for k in ("procedimiento", "cirujano", "prioridad", "aseguradora") if not f.get(k)]
+            if faltan:
+                raise ValueError("faltan campos obligatorios: " + ", ".join(faltan))
+            uci = f.get("requiere_uci", "").lower()
+            uci = None if not uci else uci in ("si", "sí", "s", "true", "1", "x", "yes")
+            r = registrar_solicitud(conn, f["cirujano"], f["procedimiento"], f["prioridad"], f["aseguradora"],
+                                    f.get("observaciones", ""), uci, rol=rol, sq=f.get("sq") or None,
+                                    fecha_solicitud=_fecha_flexible(f.get("fecha_solicitud")), commit=True)
+            creados.append({"fila": i, "sq": r["sq"], "procedimiento": r["procedimiento"], "prioridad": r["prioridad"],
+                            **({"aviso_seguridad": r["aviso_seguridad"]} if r.get("aviso_seguridad") else {})})
+        except Exception as e:
+            conn.rollback()
+            descartados.append({"fila": i, "sq": f.get("sq"), "motivo": str(e)})
+    auditar(conn, rol, "cargar_listado_pacientes", cargado_por, None, {"recibidas": len(filas), "validas": len(creados), "descartadas": len(descartados)})
+    conn.commit()
+    return {"filas_recibidas": len(filas), "filas_validas": len(creados), "filas_descartadas": len(descartados),
+            "creados": creados, "descartados": descartados,
+            "siguiente": "Cada caso queda con la solicitud por validar: a cada área le aparecen sus pendientes para habilitarlo (administrativo valida y autoriza; "
+                         "asistencial completa la preparación y sube el consentimiento firmado)."}
+
+
+def registrar_confirmacion_cirujano(conn, sq, confirmado, responsable, ayudante="", insumos_especiales="", nota="", rol="ASISTENCIAL"):
+    c = caso_existe(conn, sq)
+    out = confirmar_caso(conn, c["sq"], c["cirujano"], confirmado, ayudante, insumos_especiales,
+                         nota or f"Confirmación del cirujano registrada por {responsable}", rol=rol)
+    auditar(conn, rol, "confirmacion_cirujano_registrada", responsable, c["sq"], {"confirmado": confirmado})
+    conn.commit()
+    return out
+
+
+def pacientes_habilitados(conn):
+    ctx = contexto(conn)
+    slots = _slot_de(conn, ctx)
+    aprobado = lambda sq: slots.get(sq) and slots[sq]["estado_programacion"] == "APROBADA"
+    act = [c for c in ctx["casos"].values() if c["estado"] == "ACTIVO" and not aprobado(c["sq"])]
+    orden = {"P1": 0, "P2": 1, "P3": 2}
+    hab = sorted([c for c in act if c["habilitado"]], key=lambda c: (orden[c["prioridad"]], -c["dias_espera"]))
+    no = sorted([c for c in act if not c["habilitado"]], key=lambda c: (orden[c["prioridad"]], -c["dias_espera"]))
+    pick = lambda c: {k: c[k] for k in ("sq", "prioridad", "dias_espera", "atrasado", "procedimiento_nombre", "cirujano", "requiere_uci", "duracion_min")}
+    return {"requisitos": REQUISITOS_HABILITACION, "habilitados": [pick(c) for c in hab],
+            "no_habilitados": [{**pick(c), "falta": c["falta_para_agendar"]} for c in no]}
+
+
+def procedimientos_del_dia(conn, fecha, cirujano=""):
+    t = tablero(conn, "CIRUJANO", semana=fecha, cirujano=cirujano.upper() or None)
+    f = _f(fecha).isoformat()
+    lst = [{"sq": c["sq"], "sala": c["programado"]["sala"], "hora_inicio": c["programado"]["hora_inicio"], "hora_fin": c["programado"]["hora_fin"],
+            "procedimiento": c["procedimiento_nombre"], "cirujano": c["cirujano"], "prioridad": c["prioridad"], "uci": c["requiere_uci"],
+            "estado": "Realizada" if c["estado"] == "REALIZADO" else "Lista para sala" if c["listo_para_sala"] else "Programada"}
+           for c in t["casos"] if c["programado"]["fecha"] == f]
+    return {"fecha": f, "procedimientos": sorted(lst, key=lambda x: (x["sala"], x["hora_inicio"]))}
+
+
+# ------------------------------------------------------------------ SOPORTES (archivos)
+DDL_SOPORTES = """CREATE TABLE IF NOT EXISTS soportes (id SERIAL PRIMARY KEY, sq TEXT NOT NULL REFERENCES casos(sq) ON DELETE CASCADE,
+  tipo TEXT NOT NULL, nombre_archivo TEXT NOT NULL, mime TEXT NOT NULL, tamano INT NOT NULL, sha256 TEXT NOT NULL, contenido BYTEA NOT NULL,
+  rol TEXT NOT NULL, subido_por TEXT NOT NULL, momento TIMESTAMPTZ NOT NULL DEFAULT now())"""
+TIPOS_POR_ROL = {
+    "ASISTENCIAL": ["CONSENTIMIENTO_FIRMADO", "EXAMENES", "VALORACION_PREANESTESICA", "DESCRIPCION_QUIRURGICA", "REGISTRO_ANESTESIA", "LISTA_CHEQUEO", "OTRO"],
+    "ADMINISTRATIVO": ["AUTORIZACION", "OTRO"],
+    "INSUMOS": ["REGISTRO_IMPLANTE", "OTRO"],
+    "CONTABLE": ["FACTURA", "RESPUESTA_GLOSA", "OTRO"],
+}
+MAX_SOPORTE = 5 * 1024 * 1024
+
+
+def asegurar_soportes(conn):
+    with conn.cursor() as cur:
+        cur.execute("SELECT to_regclass('soportes') IS NOT NULL")
+        if not cur.fetchone()[0]:
+            cur.execute(DDL_SOPORTES)
+            conn.commit()
+
+
+def subir_soporte(conn, rol, sq, tipo, nombre_archivo, contenido_base64, subido_por):
+    import base64
+    import hashlib
+    c = caso_existe(conn, sq)
+    tipo = tipo.upper().strip()
+    if tipo not in TIPOS_POR_ROL.get(rol, []):
+        raise ValueError(f"El rol {rol.lower()} puede subir: {', '.join(TIPOS_POR_ROL.get(rol, []))}.")
+    if not subido_por:
+        raise ValueError("Indique subido_por (cargo).")
+    nombre = (nombre_archivo or "").strip()
+    if not nombre or len(nombre) > 120 or "/" in nombre or "\\" in nombre:
+        raise ValueError("nombre_archivo inválido (sin rutas, máximo 120 caracteres).")
+    if texto.revisar_pii(nombre):
+        raise ValueError("El nombre del archivo parece contener un dato personal. Use el código SQ y el tipo, por ejemplo consentimiento_SQ-1001.pdf.")
+    try:
+        b64 = contenido_base64.split(",", 1)[1] if contenido_base64.startswith("data:") else contenido_base64
+        datos = base64.b64decode(b64, validate=True)
+    except Exception:
+        raise ValueError("contenido_base64 no es base64 válido.")
+    if not datos or len(datos) > MAX_SOPORTE:
+        raise ValueError(f"El archivo debe pesar entre 1 byte y {MAX_SOPORTE // 1024 // 1024} MB.")
+    if datos[:5] == b"%PDF-":
+        mime = "application/pdf"
+    elif datos[:8] == b"\x89PNG\r\n\x1a\n":
+        mime = "image/png"
+    elif datos[:3] == b"\xff\xd8\xff":
+        mime = "image/jpeg"
+    else:
+        raise ValueError("Solo se aceptan PDF, PNG o JPG.")
+    asegurar_soportes(conn)
+    sha = hashlib.sha256(datos).hexdigest()
+    with conn.cursor() as cur:
+        cur.execute("""INSERT INTO soportes (sq, tipo, nombre_archivo, mime, tamano, sha256, contenido, rol, subido_por)
+                       VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s) RETURNING id""", (c["sq"], tipo, nombre, mime, len(datos), sha, datos, rol, subido_por))
+        sid = cur.fetchone()[0]
+    auditar(conn, rol, "subir_soporte", subido_por, c["sq"], {"id": sid, "tipo": tipo, "archivo": nombre, "bytes": len(datos)})
+    conn.commit()
+    ctx = contexto(conn)
+    cc = ctx["casos"].get(c["sq"])
+    return {"subido": True, "id_soporte": sid, "sq": c["sq"], "tipo": tipo, "mime": mime, "bytes": len(datos),
+            "habilitado_para_agendar": cc["habilitado"] if cc else None, "falta_para_agendar": cc["falta_para_agendar"] if cc else None}
+
+
+def listar_soportes(conn, sq=""):
+    asegurar_soportes(conn)
+    filas = _q(conn, """SELECT id, sq, tipo, nombre_archivo, mime, tamano, rol, subido_por, momento FROM soportes
+                        WHERE (%s = '' OR sq = %s) ORDER BY sq, momento""", (sq.upper(), sq.upper()))
+    return [{**f, "momento": _txt(f["momento"])} for f in filas]
+
+
+def descargar_soporte(conn, rol, id_soporte):
+    import base64
+    asegurar_soportes(conn)
+    f = _uno(conn, "SELECT * FROM soportes WHERE id = %s", (int(id_soporte),))
+    if not f:
+        raise ValueError(f"No existe el soporte {id_soporte}.")
+    auditar(conn, rol, "descargar_soporte", None, f["sq"], {"id": f["id"]})
+    conn.commit()
+    return {"id": f["id"], "sq": f["sq"], "tipo": f["tipo"], "nombre_archivo": f["nombre_archivo"], "mime": f["mime"], "tamano": f["tamano"],
+            "contenido_base64": base64.b64encode(bytes(f["contenido"])).decode()}
